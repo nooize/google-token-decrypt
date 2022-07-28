@@ -1,2 +1,2 @@
 # google-token-decrypt
-Decrypt Google Pay Token
+golang decrypt lib for Google Pay Token
