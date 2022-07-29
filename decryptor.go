@@ -1,15 +1,17 @@
 package gpay
 
 import (
-	"crypto"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/ecdsa"
+	"crypto/hmac"
 	"encoding/json"
 	"errors"
-	"fmt"
 )
 
 type tokenDecrypt struct {
 	merchantId         string
-	merchantPrivateKey crypto.PrivateKey
+	merchantPrivateKey *ecdsa.PrivateKey
 }
 
 func (d *tokenDecrypt) Decrypt(input []byte) (*GooglePayToken, error) {
@@ -33,11 +35,7 @@ func (d *tokenDecrypt) Decrypt(input []byte) (*GooglePayToken, error) {
 		return nil, errors.New("intermediate key signatures is empty")
 	}
 
-	// Verify Intermediate Signing Key
-	data := constructSignedData(
-		GoogleSenderId, req.Protocol.String(), req.IntermediateKey.Key.Raw(),
-	)
-	if err := verifySignaturesWithRootKeys(req.IntermediateKey.Signatures, data); err != nil {
+	if err := req.verifyIntermediateSigningKey(); err != nil {
 		return nil, err
 	}
 
@@ -46,22 +44,52 @@ func (d *tokenDecrypt) Decrypt(input []byte) (*GooglePayToken, error) {
 		return nil, errors.New("intermediate key is expired")
 	}
 
-	// Verify Message Signature
-	data = constructSignedData(
-		GoogleSenderId,
-		d.merchantId,
-		req.Protocol.String(),
-		req.SignedMessage.Raw(),
-	)
-	publicKey, err := loadPublicKey(req.IntermediateKey.Key.Value)
-	if err != nil {
-		return nil, fmt.Errorf("unable load IntermediateKey : %s", err.Error())
-	}
-	if err := verifySignature(publicKey, data, req.Signature); err != nil {
-		return nil, fmt.Errorf("invalid message signature: \n Exp: %s \n Error: %s", req.Signature.String(), err.Error())
+	if err := req.verifyMessageSignature(d.merchantId); err != nil {
+		return nil, err
 	}
 
+	deriveKey, err := d.getDeriveKey(req.SignedMessage.EphemeralPublicKey)
+	if err != nil {
+		return nil, err
+	}
+	symmetricKey := deriveKey[:32]
+
+	messageMac := hmacSha256(deriveKey[32:], []byte(req.SignedMessage.Raw()))
+	if hmac.Equal(req.SignedMessage.Tag, messageMac) {
+		return nil, errors.New("encrypted message MAC is not valid MAC Tag ")
+	}
+
+	cip, err := aes.NewCipher(symmetricKey)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, len(req.SignedMessage.EncryptedMessage))
+	ctr := cipher.NewCTR(cip, make([]byte, aes.BlockSize))
+	//out := make([]byte, 0)
+	ctr.XORKeyStream(out, req.SignedMessage.EncryptedMessage)
+
 	return &GooglePayToken{
-		Data: "",
+		Data: string(out),
 	}, nil
+}
+
+func (d *tokenDecrypt) getDeriveKey(ephemeralBytes []byte) ([]byte, error) {
+	public, err := unmarshalPublicKey(ephemeralBytes)
+	if err != nil {
+		return nil, err
+	}
+	x, _ := public.Curve.ScalarMult(public.X, public.Y, d.merchantPrivateKey.D.Bytes())
+	if x == nil {
+		return nil, errors.New("scalar multiplication resulted in infinity")
+	}
+
+	demKey, err := computeHKDF(
+		append(ephemeralBytes, x.Bytes()...), // key
+		make([]byte, 32),                     // empty salt
+		[]byte(GoogleSenderId),
+		64)
+	if err != nil {
+		return nil, err
+	}
+	return demKey, nil
 }

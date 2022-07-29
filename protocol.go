@@ -20,9 +20,9 @@ func (p *TokenProtocol) String() string {
 func (p *TokenProtocol) UnmarshalJSON(bytes []byte) error {
 	str, _ := strconv.Unquote(string(bytes))
 	switch TokenProtocol(str) {
-	case EcV1:
+	// case EcV1:
 	case EcV2:
-	case EcV2SigningOnly:
+	// case EcV2SigningOnly:
 	default:
 		return fmt.Errorf("protocol %v not supported", str)
 	}

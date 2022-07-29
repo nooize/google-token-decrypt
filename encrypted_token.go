@@ -2,6 +2,7 @@ package gpay
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"time"
 )
@@ -13,10 +14,11 @@ type encryptedToken struct {
 	SignedMessage   signedMessage   `json:"signedMessage"`
 }
 
-/*
 func (v *encryptedToken) verifyIntermediateSigningKey() error {
 	data := constructSignedData(
-		GoogleSenderId, v.Protocol.String(), v.IntermediateKey.Key.Raw(),
+		GoogleSenderId,
+		string(v.Protocol),
+		v.IntermediateKey.Key.Raw(),
 	)
 	for _, publicKey := range rootSigningkeys {
 		for _, signature := range v.IntermediateKey.Signatures {
@@ -36,7 +38,7 @@ func (v *encryptedToken) verifyMessageSignature(recipient string) error {
 	data := constructSignedData(
 		GoogleSenderId,
 		recipient,
-		v.Protocol.Version,
+		string(v.Protocol),
 		v.SignedMessage.Raw(),
 	)
 
@@ -47,7 +49,6 @@ func (v *encryptedToken) verifyMessageSignature(recipient string) error {
 	return nil
 
 }
-*/
 
 type intermediateKey struct {
 	Key        signedKey    `json:"signedKey"`
