@@ -13,8 +13,10 @@ import (
 	"fmt"
 	"golang.org/x/crypto/hkdf"
 	"io"
+	"log"
 	"math/big"
 	"os"
+	"strings"
 )
 
 const (
@@ -28,15 +30,33 @@ var (
 )
 
 func init() {
-	if raw := os.Getenv("GOOGLE_PAY_MERCHANT_PRIVATE_KEY"); len(raw) > 0 {
-		bytes, err := base64.StdEncoding.DecodeString(raw)
-		key, err := loadPrivateKey(bytes)
-		if err != nil {
-			return
+	if err := func() error {
+		merchantId := os.Getenv(EnvMerchantId)
+		if merchantId = strings.TrimSpace(merchantId); len(merchantId) == 0 {
+			return nil
 		}
-		defDecryptor = New("someRecipient", key)
+		keySrc := os.Getenv(EnvMerchantPrivateKey)
+		if len(keySrc) == 0 {
+			return nil
+		}
+		bytes, err := base64.StdEncoding.DecodeString(keySrc)
+		if err != nil {
+			return fmt.Errorf("env %s private key base64 decode: %s", EnvMerchantPrivateKey, err.Error())
+		}
+		privateKey, err := loadPrivateKey(bytes)
+		if err != nil {
+			return fmt.Errorf("env %s private key parse error: %s", EnvMerchantPrivateKey, err.Error())
+		}
+		decryptor, err := New(merchantId, privateKey)
+		if err != nil {
+			return fmt.Errorf("env %s private key parse error: %s", EnvMerchantPrivateKey, err.Error())
+		}
+		defDecryptor = decryptor
+		return nil
+	}(); err != nil {
+		log.Printf(err.Error())
 	}
-	loadRootSigningkeys()
+	fetchRootSigningkeys()
 }
 
 func uintToBytes(v uint32) []byte {

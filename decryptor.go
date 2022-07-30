@@ -19,10 +19,8 @@ func (d *tokenDecrypt) Decrypt(input []byte) (*GooglePayToken, error) {
 	if err := json.Unmarshal(input, req); err != nil {
 		return nil, err
 	}
-
 	/*
 		if (!payload.has(PaymentMethodTokenConstants.JSON_ENCRYPTED_MESSAGE_KEY)
-		|| !payload.has(PaymentMethodTokenConstants.JSON_TAG_KEY)
 		|| !payload.has(PaymentMethodTokenConstants.JSON_EPHEMERAL_PUBLIC_KEY)
 		|| payload.size() != 3) {
 	*/
@@ -33,6 +31,8 @@ func (d *tokenDecrypt) Decrypt(input []byte) (*GooglePayToken, error) {
 		return nil, errors.New("intermediate signed key value is empty")
 	case len(req.IntermediateKey.Signatures) == 0:
 		return nil, errors.New("intermediate key signatures is empty")
+	case len(req.SignedMessage.Tag) == 0:
+		return nil, errors.New("signed message tag is empty")
 	}
 
 	if err := req.verifyIntermediateSigningKey(); err != nil {
@@ -63,14 +63,16 @@ func (d *tokenDecrypt) Decrypt(input []byte) (*GooglePayToken, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]byte, len(req.SignedMessage.EncryptedMessage))
+	decrypted := make([]byte, len(req.SignedMessage.EncryptedMessage))
 	ctr := cipher.NewCTR(cip, make([]byte, aes.BlockSize))
 	//out := make([]byte, 0)
-	ctr.XORKeyStream(out, req.SignedMessage.EncryptedMessage)
+	ctr.XORKeyStream(decrypted, req.SignedMessage.EncryptedMessage)
 
-	return &GooglePayToken{
-		Data: string(out),
-	}, nil
+	token := new(GooglePayToken)
+	if err := json.Unmarshal(decrypted, token); err != nil {
+		return nil, err
+	}
+	return token, nil
 }
 
 func (d *tokenDecrypt) getDeriveKey(ephemeralBytes []byte) ([]byte, error) {
@@ -80,7 +82,7 @@ func (d *tokenDecrypt) getDeriveKey(ephemeralBytes []byte) ([]byte, error) {
 	}
 	x, _ := public.Curve.ScalarMult(public.X, public.Y, d.merchantPrivateKey.D.Bytes())
 	if x == nil {
-		return nil, errors.New("scalar multiplication resulted in infinity")
+		return nil, errors.New("merchant private key scalar multiplication resulted in infinity")
 	}
 
 	demKey, err := computeHKDF(

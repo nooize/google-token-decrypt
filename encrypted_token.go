@@ -20,14 +20,7 @@ func (v *encryptedToken) verifyIntermediateSigningKey() error {
 		string(v.Protocol),
 		v.IntermediateKey.Key.Raw(),
 	)
-	for _, publicKey := range rootSigningkeys {
-		for _, signature := range v.IntermediateKey.Signatures {
-			if err := verifySignature(publicKey.Key, data, signature); err == nil {
-				return nil
-			}
-		}
-	}
-	return fmt.Errorf("intermediate signing key signature not verified")
+	return verifySignaturesWithRootKeys(v.IntermediateKey.Signatures, data)
 }
 
 func (v *encryptedToken) verifyMessageSignature(recipient string) error {
