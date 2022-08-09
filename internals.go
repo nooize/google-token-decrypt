@@ -9,6 +9,7 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"golang.org/x/crypto/hkdf"
@@ -56,13 +57,7 @@ func init() {
 	}(); err != nil {
 		log.Printf(err.Error())
 	}
-	fetchRootSigningkeys()
-}
-
-func uintToBytes(v uint32) []byte {
-	out := make([]byte, 4)
-	binary.LittleEndian.PutUint32(out, v)
-	return out
+	fetchRootSigningKeys()
 }
 
 func toBase64(v []byte) string {
@@ -114,6 +109,11 @@ func unmarshalPublicKey(data []byte) (*ecdsa.PublicKey, error) {
 	return &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, nil
 }
 
+func unmarshalString(data []byte) (string, error) {
+	str := ""
+	return str, json.Unmarshal(data, &str)
+}
+
 func loadPublicKey(data []byte) (*ecdsa.PublicKey, error) {
 	pub, err := x509.ParsePKIXPublicKey(data)
 	if err != nil {
@@ -125,15 +125,7 @@ func loadPublicKey(data []byte) (*ecdsa.PublicKey, error) {
 		return nil, errors.New("Not a ECDSA public key")
 	}
 
-	//x, y := elliptic.Unmarshal(curve, data)
-	//cert := new(ecdsa.PublicKey)
-	//cert.Curve = curve
-	//cert.X = x
-	//cert.Y = y
-
 	return publicKey, nil
-	//ecdsa.Verify(nil, key, nil, nil)
-	//return cast(EllipticCurvePublicKey, load_der_public_key(derdata, default_backend()))
 }
 
 func verifySignature(key *ecdsa.PublicKey, data []byte, signature []byte) error {

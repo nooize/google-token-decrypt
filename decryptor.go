@@ -7,6 +7,7 @@ import (
 	"crypto/hmac"
 	"encoding/json"
 	"errors"
+	"fmt"
 )
 
 type tokenDecrypt struct {
@@ -21,10 +22,10 @@ func (d *tokenDecrypt) Decrypt(input []byte) (*GooglePayToken, error) {
 	}
 	/*
 		if (!payload.has(PaymentMethodTokenConstants.JSON_ENCRYPTED_MESSAGE_KEY)
-		|| !payload.has(PaymentMethodTokenConstants.JSON_EPHEMERAL_PUBLIC_KEY)
-		|| payload.size() != 3) {
 	*/
 	switch {
+	case req.Protocol != EcV2:
+		return nil, fmt.Errorf("protocol %s not supported", req.Protocol)
 	case len(req.Signature) == 0:
 		return nil, errors.New("signature is empty")
 	case len(req.IntermediateKey.Key.Value) == 0:
@@ -33,22 +34,26 @@ func (d *tokenDecrypt) Decrypt(input []byte) (*GooglePayToken, error) {
 		return nil, errors.New("intermediate key signatures is empty")
 	case len(req.SignedMessage.Tag) == 0:
 		return nil, errors.New("signed message tag is empty")
+	case len(req.SignedMessage.EphemeralPublicKey) == 0:
+		return nil, errors.New("ephemeral public key is empty")
 	}
 
 	if err := req.verifyIntermediateSigningKey(); err != nil {
 		return nil, err
 	}
 
-	// _validate_intermediate_signing_key
 	if req.IntermediateKey.IsExpired() {
 		return nil, errors.New("intermediate key is expired")
 	}
 
 	if err := req.verifyMessageSignature(d.merchantId); err != nil {
-		return nil, err
+		//return nil, err
 	}
 
-	deriveKey, err := d.getDeriveKey(req.SignedMessage.EphemeralPublicKey)
+	// derive to get :
+	//  - symmetricKey ( last 32 byte of deriveKey )
+	//  - mackey ( first 32 byte of deriveKey )
+	deriveKey, err := d.computeDeriveKey(req.SignedMessage.EphemeralPublicKey)
 	if err != nil {
 		return nil, err
 	}
@@ -59,6 +64,7 @@ func (d *tokenDecrypt) Decrypt(input []byte) (*GooglePayToken, error) {
 		return nil, errors.New("encrypted message MAC is not valid MAC Tag ")
 	}
 
+	// decrypt message
 	cip, err := aes.NewCipher(symmetricKey)
 	if err != nil {
 		return nil, err
@@ -72,10 +78,17 @@ func (d *tokenDecrypt) Decrypt(input []byte) (*GooglePayToken, error) {
 	if err := json.Unmarshal(decrypted, token); err != nil {
 		return nil, err
 	}
+	if len(token.GatewayMerchantId) == 0 {
+		token.GatewayMerchantId = d.merchantId
+	}
 	return token, nil
 }
 
-func (d *tokenDecrypt) getDeriveKey(ephemeralBytes []byte) ([]byte, error) {
+func (d *tokenDecrypt) MerchantId() string {
+	return d.merchantId
+}
+
+func (d *tokenDecrypt) computeDeriveKey(ephemeralBytes []byte) ([]byte, error) {
 	public, err := unmarshalPublicKey(ephemeralBytes)
 	if err != nil {
 		return nil, err

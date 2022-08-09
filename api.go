@@ -2,19 +2,15 @@ package gpay
 
 import (
 	"crypto/ecdsa"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
 )
 
-const (
-	GoogleSenderId        = "Google"
-	EnvMerchantId         = "GOOGLE_PAY_MERCHANT_ID"
-	EnvMerchantPrivateKey = "GOOGLE_PAY_MERCHANT_PRIVATE_KEY"
-)
-
 type ITokenDecryptor interface {
 	Decrypt([]byte) (*GooglePayToken, error)
+	MerchantId() string
 }
 
 func New(recipient string, key *ecdsa.PrivateKey) (ITokenDecryptor, error) {
@@ -32,4 +28,16 @@ func Decrypt(data []byte) (*GooglePayToken, error) {
 		return nil, fmt.Errorf("default token decryptor not defined")
 	}
 	return defDecryptor.Decrypt(data)
+}
+
+func ParseMerchantPrivateKey(str string) (*ecdsa.PrivateKey, error) {
+	data, err := base64.StdEncoding.DecodeString(str)
+	if err != nil {
+		return nil, err
+	}
+	return loadPrivateKey(data)
+}
+
+func UnmarshalMerchantPrivateKey(data []byte) (*ecdsa.PrivateKey, error) {
+	return loadPrivateKey(data)
 }

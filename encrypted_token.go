@@ -3,7 +3,7 @@ package gpay
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
+	"os"
 	"time"
 )
 
@@ -20,7 +20,14 @@ func (v *encryptedToken) verifyIntermediateSigningKey() error {
 		string(v.Protocol),
 		v.IntermediateKey.Key.Raw(),
 	)
-	return verifySignaturesWithRootKeys(v.IntermediateKey.Signatures, data)
+	for _, publicKey := range filterRootKeys(v.Protocol, !("TEST" == os.Getenv("MODE"))) {
+		for _, signature := range v.IntermediateKey.Signatures {
+			if err := verifySignature(&publicKey.Key.PublicKey, data, signature); err == nil {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("invalid signature for intermediate signing key")
 }
 
 func (v *encryptedToken) verifyMessageSignature(recipient string) error {
@@ -49,20 +56,12 @@ type intermediateKey struct {
 }
 
 func (v intermediateKey) IsExpired() bool {
-	i, err := strconv.Atoi(v.Key.Expiration)
-	if err != nil {
-		return true
-	}
-	// TODO localize time
-	if int64(i) < time.Now().Unix() {
-		return true
-	}
-	return false
+	return v.Key.Expiration != nil && v.Key.Expiration.Before(time.Now())
 }
 
 type baseSignedKey struct {
-	Value      JsonBase64 `json:"keyValue"`
-	Expiration string     `json:"keyExpiration"`
+	Value      JsonBase64     `json:"keyValue"`
+	Expiration *JsonTimestamp `json:"keyExpiration"`
 }
 
 type signedKey struct {
@@ -75,7 +74,7 @@ func (v *signedKey) Raw() string {
 }
 
 func (v *signedKey) UnmarshalJSON(bytes []byte) (err error) {
-	v.raw, err = strconv.Unquote(string(bytes))
+	v.raw, err = unmarshalString(bytes)
 	if err != nil {
 		return err
 	}
@@ -88,7 +87,7 @@ func (v *signedKey) UnmarshalJSON(bytes []byte) (err error) {
 }
 
 type baseSignedMessage struct {
-	EncryptedMessage   JsonBase64 `json:"encryptedMessage"`
+	EncryptedMessage   JsonBase64
 	EphemeralPublicKey JsonBase64 `json:"ephemeralPublicKey"`
 	Tag                JsonBase64 `json:"tag"`
 }
@@ -103,7 +102,7 @@ func (v *signedMessage) Raw() string {
 }
 
 func (v *signedMessage) UnmarshalJSON(bytes []byte) (err error) {
-	v.raw, err = strconv.Unquote(string(bytes))
+	v.raw, err = unmarshalString(bytes)
 	if err != nil {
 		return err
 	}
@@ -112,5 +111,5 @@ func (v *signedMessage) UnmarshalJSON(bytes []byte) (err error) {
 		return err
 	}
 	v.baseSignedMessage = t
-	return nil
+	return err
 }

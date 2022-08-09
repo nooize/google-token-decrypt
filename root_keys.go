@@ -2,16 +2,18 @@ package gpay
 
 import (
 	"crypto/ecdsa"
+	"encoding/base64"
 	"encoding/json"
-	"fmt"
+	"errors"
+	"io"
+	"log"
 	"net/http"
+	"os"
 	"sync"
 )
 
-const testRootkeys = "[{\n    \"keyValue\": \"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE/1+3HBVSbdv+j7NaArdgMyoSAM43yRydzqdg1TxodSzA96Dj4Mc1EiKroxxunavVIvdxGnJeFViTzFvzFRxyCw==\",\n    \"keyExpiration\": \"32506264800000\",\n    \"protocolVersion\": \"ECv2\"\n}]"
-
 const (
-	TestRootKeysUrl       = "https://payments.developers.google.com/paymentmethodtoken/keys.json"
+	TestRootKeysUrl       = "https://payments.developers.google.com/paymentmethodtoken/test/keys.json"
 	ProductionRootKeysUrl = "https://payments.developers.google.com/paymentmethodtoken/keys.json"
 )
 
@@ -20,43 +22,96 @@ var (
 	rootSigningKeysMu = sync.RWMutex{}
 )
 
-type signingKeyOptions struct {
-	Protocol   TokenProtocol `json:"protocolVersion"`
-	Expiration string        `json:"keyExpiration"`
-}
-
 type rootSigningKey struct {
-	signingKeyOptions
-	Production bool
-	Key        *ecdsa.PublicKey
+	Protocol   TokenProtocol  `json:"protocolVersion"`
+	Expiration *JsonTimestamp `json:"keyExpiration,omitempty"`
+	Key        *rootPublicKey `json:"keyValue"`
+	Production bool           `json:"-"`
 }
 
-func verifySignaturesWithRootKeys(signatures []JsonBase64, data []byte) error {
-	for _, publicKey := range rootSigningKeys {
-		for _, signature := range signatures {
-			if err := verifySignature(publicKey.Key, data, signature); err == nil {
-				return nil
-			}
+type rootPublicKey struct {
+	ecdsa.PublicKey
+}
+
+func (v *rootPublicKey) UnmarshalJSON(bytes []byte) error {
+	str := ""
+	if err := json.Unmarshal(bytes, &str); err != nil {
+		return err
+	}
+	data, err := base64.StdEncoding.DecodeString(str)
+	if err != nil {
+		return err
+	}
+	key, err := loadPublicKey(data)
+	if err != nil {
+		return err
+	}
+	*v = rootPublicKey{*key}
+	return nil
+}
+
+func filterRootKeys(protocol TokenProtocol, live bool) []*rootSigningKey {
+	out := make([]*rootSigningKey, 0)
+	rootSigningKeysMu.RLock()
+	for _, key := range rootSigningKeys {
+		if key.Protocol == protocol && key.Production == live {
+			out = append(out, key)
 		}
 	}
-	return fmt.Errorf("invalid signature for intermediate signing key")
+	rootSigningKeysMu.RUnlock()
+	return out
 }
 
-func fetchRootSigningkeys() {
-	keys := make([]*rootSigningKey, 0)
-	if list, err := fetchKeysFromUrl(ProductionRootKeysUrl, true); err != nil {
-		// TODO log error
-	} else {
-		keys = append(keys, list...)
-	}
-	if list, err := fetchKeysFromUrl(TestRootKeysUrl, true); err != nil {
-		// TODO log error
-	} else {
-		keys = append(keys, list...)
-	}
+func fetchRootSigningKeys() {
 	rootSigningKeysMu.Lock()
+	keys := fetchGoogleRootSigningKeys()
+	keys = append(keys, fetchLocalRootSigningKeys()...)
 	rootSigningKeys = keys
 	rootSigningKeysMu.Unlock()
+}
+
+func fetchGoogleRootSigningKeys() (keys []*rootSigningKey) {
+	keys = make([]*rootSigningKey, 0)
+
+	if list, err := fetchKeysFromUrl(ProductionRootKeysUrl, true); err != nil {
+		log.Printf("%v", err)
+	} else {
+		keys = append(keys, list...)
+	}
+	if list, err := fetchKeysFromUrl(TestRootKeysUrl, false); err != nil {
+	} else {
+		keys = append(keys, list...)
+	}
+
+	return keys
+}
+
+func fetchLocalRootSigningKeys() (keys []*rootSigningKey) {
+	keys = make([]*rootSigningKey, 0)
+
+	path := os.Getenv(EnvRootSignedKetsFile)
+	if len(path) == 0 {
+		return
+	}
+	_, err := os.Stat(path)
+	switch {
+	case err != nil && errors.Is(err, os.ErrNotExist):
+		log.Printf("root keys file not exists : %v", path)
+		return
+	case err != nil:
+		log.Printf("root keys file not exists : %v", path)
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("root keys file read: %v", err.Error())
+		return
+	}
+	keys, err = parseRootSigningKeys(data, true)
+	if err != nil {
+		log.Printf("root keys file parse: %v", err.Error())
+	}
+	return
 }
 
 func fetchKeysFromUrl(url string, isProduction bool) ([]*rootSigningKey, error) {
@@ -65,33 +120,19 @@ func fetchKeysFromUrl(url string, isProduction bool) ([]*rootSigningKey, error) 
 		return nil, err
 	}
 	defer resp.Body.Close()
-	out := make([]*rootSigningKey, 0)
-	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
-	}
-	for _, v := range out {
-		v.Production = isProduction
-	}
-	return out, nil
+	data, err := io.ReadAll(resp.Body)
+	return parseRootSigningKeys(data, isProduction)
 }
 
-func parseRootSigningkeys() {
-	keys := make([]*rootSigningKey, 0)
-	list := make([]struct {
-		signingKeyOptions
-		Value JsonBase64 `json:"keyValue"`
-	}, 0)
-	if err := json.Unmarshal([]byte(testRootkeys), &list); err != nil {
-		return
+func parseRootSigningKeys(data []byte, isProduction bool) ([]*rootSigningKey, error) {
+	res := struct {
+		Keys []*rootSigningKey `json:"keys"`
+	}{}
+	if err := json.Unmarshal(data, &res); err != nil {
+		return nil, err
 	}
-	for _, v := range list {
-		key := &rootSigningKey{signingKeyOptions: v.signingKeyOptions}
-		if publicKey, err := loadPublicKey(v.Value); err == nil {
-			key.Key = publicKey
-			keys = append(keys, key)
-		}
+	for _, v := range res.Keys {
+		v.Production = isProduction
 	}
-	rootSigningKeysMu.Lock()
-	rootSigningKeys = keys
-	rootSigningKeysMu.Unlock()
+	return res.Keys, nil
 }
